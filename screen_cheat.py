@@ -40,7 +40,7 @@ face_landmarker = vision.FaceLandmarker.create_from_options(options)
 
 def calibration_step():
 
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture(0)
 
     # Get the FPS of the video stream
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -74,14 +74,14 @@ def calibration_step():
                 key = cv2.waitKey(1) & 0xFF
                 if key == 13:  # Enter key
 
-                    nose_tip_y = face_landmark[NOSE_TIP_INDEX].y
+                    nose_tip = face_landmark[NOSE_TIP_INDEX]
                     pupil_avg_y = (face_landmark[LEFT_EYE_PUPIL_INDEX].y + face_landmark[RIGHT_EYE_PUPIL_INDEX].y) / 2
                     eye_avg_y = (face_landmark[LEFT_EYE_INNER_INDEX].y + face_landmark[LEFT_EYE_OUTER_INDEX].y +
                                  face_landmark[RIGHT_EYE_INNER_INDEX].y +
                                  face_landmark[RIGHT_EYE_OUTER_INDEX].y) / 4
 
                     # Compute the head pose (roll, pitch, yaw) using the relative positions of the landmarks
-                    roll, pitch, yaw = calculate_head_pose(nose_tip_y, face_landmark[LEFT_EYE_INNER_INDEX].y, face_landmark[RIGHT_EYE_INNER_INDEX].y)
+                    pitch = calculate_head_pose(nose_tip, face_landmark[LEFT_EYE_INNER_INDEX])
 
                     face_calibration = {
                         "nose_tip_y": face_landmark[NOSE_TIP_INDEX].y,
@@ -93,11 +93,9 @@ def calibration_step():
                         "right_eye_outer_y": face_landmark[RIGHT_EYE_OUTER_INDEX].y,  # Right eye
                         "pupil_avg_y": pupil_avg_y,
                         "eye_avg_y": eye_avg_y,
-                        "pupil_distance_to_nose_tip": round(pupil_avg_y - nose_tip_y, decimal_places_rounding),
-                        "eye_distance_to_nose_tip": round(eye_avg_y - nose_tip_y, decimal_places_rounding),
-                        "roll": roll,
-                        "pitch": pitch,
-                        "yaw": yaw,
+                        "pupil_distance_to_nose_tip": round(pupil_avg_y - nose_tip.y, decimal_places_rounding),
+                        "eye_distance_to_nose_tip": round(eye_avg_y - nose_tip.y, decimal_places_rounding),
+                        "pitch": pitch
                     }
 
                     print(face_calibration)
@@ -114,32 +112,29 @@ def calibration_step():
     cap.release()
     cv2.destroyAllWindows()
 
-def calculate_head_pose(nose_tip_y, left_eye_inner_y, right_eye_inner_y):
+
+def calculate_head_pose(nose_tip, left_eye_inner):
     """
     Calculate the head pose (roll, pitch, yaw) based on the 3D positions of nose tip and pupils.
     """
     # Compute vectors
-    nose_to_left_eye = left_eye_inner_y - nose_tip_y
-    nose_to_right_eye = right_eye_inner_y - nose_tip_y
-
-    # Calculate the angle between these two vectors using dot product
-    dot_product = np.dot(nose_to_left_eye, nose_to_right_eye)
-    norm_left_eye = np.linalg.norm(nose_to_left_eye)
-    norm_right_eye = np.linalg.norm(nose_to_right_eye)
-
-    # Compute the angle between the two vectors
-    angle_between_eyes = np.arccos(dot_product / (norm_left_eye * norm_right_eye))
-
-    # Roll is based on the angle between the eyes, assuming a simple case for demonstration
-    roll = np.degrees(angle_between_eyes)
+    nose_to_left_eye = np.subtract([left_eye_inner.x, left_eye_inner.y, left_eye_inner.z], [nose_tip.x, nose_tip.y, nose_tip.z])
 
     # Pitch (tilting head up or down) can be estimated by comparing vertical movement
-    pitch = np.arctan2(nose_to_left_eye[2], norm_left_eye)  # Using the 3D nose to left eye vector
+    pitch = np.arctan2(nose_to_left_eye[1], np.sqrt(nose_to_left_eye[0]**2 + nose_to_left_eye[2]**2))
 
-    # Yaw (left-right head rotation) can be calculated similarly based on horizontal differences
-    yaw = np.arctan2(nose_to_left_eye[1], norm_left_eye)
+    return round(pitch, decimal_places_rounding)
 
-    return roll, pitch, yaw
+
+def adjust_distance(pupil_to_nose_distance: float, current_pitch: float, calibration_pitch: float) -> float:
+    # Calculate the pitch difference
+    delta_pitch = current_pitch - calibration_pitch
+
+    # Adjust the distance using the cosine of the pitch difference
+    adjusted_distance = pupil_to_nose_distance * np.cos(delta_pitch)
+
+    return adjusted_distance
+
 
 def main(calibration):
     num_frames_looking_each_direction = {
@@ -148,7 +143,7 @@ def main(calibration):
         "Straight": 0
     }
 
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture(0)
 
     # Get the FPS of the video stream
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -219,7 +214,7 @@ def determine_gaze(face_landmark, calibration, frame):
     """
     nose_tip = face_landmark[NOSE_TIP_INDEX]
     left_eye_pupil = face_landmark[LEFT_EYE_PUPIL_INDEX]  # Left eye
-    left_eye_inner_y = face_landmark[LEFT_EYE_INNER_INDEX].y  # Left eye
+    left_eye_inner = face_landmark[LEFT_EYE_INNER_INDEX]  # Left eye
     left_eye_outer_y = face_landmark[LEFT_EYE_OUTER_INDEX].y  # Left eye
     right_eye_pupil = face_landmark[RIGHT_EYE_PUPIL_INDEX]  # Right eye
     right_eye_inner_y = face_landmark[RIGHT_EYE_INNER_INDEX].y  # Right eye
@@ -231,29 +226,28 @@ def determine_gaze(face_landmark, calibration, frame):
     pupil_distance_to_nose_tip = round(pupil_distance_to_nose_tip, decimal_places_rounding)
 
     # Calculate the average inner/outer eye level
-    eye_avg_y = (left_eye_inner_y + left_eye_outer_y + right_eye_inner_y + right_eye_outer_y) / 4
+    eye_avg_y = (left_eye_inner.y + left_eye_outer_y + right_eye_inner_y + right_eye_outer_y) / 4
     eye_distance_to_nose_tip = eye_avg_y - nose_tip.y
     eye_distance_to_nose_tip = round(eye_distance_to_nose_tip, decimal_places_rounding)
 
     # Normalize the distances by considering the head pose (roll and pitch) from calibration
-    calib_roll = calibration['roll']
     calib_pitch = calibration['pitch']
 
     # Compute the head pose (roll, pitch, yaw) using the relative positions of the landmarks
-    current_roll, current_pitch, current_yaw = calculate_head_pose(nose_tip, left_eye_pupil, right_eye_pupil)
+    current_pitch = calculate_head_pose(nose_tip, left_eye_inner)
 
     # Normalize based on pitch (vertical tilt)
-    normalized_pupil_distance = pupil_distance_to_nose_tip - (current_pitch - calib_pitch) * 0.1
-    normalized_eye_distance = pupil_distance_to_nose_tip - (current_pitch - calib_pitch) * 0.1
+    adjusted_pupil_distance = adjust_distance(pupil_distance_to_nose_tip, current_pitch, calib_pitch)
+    adjusted_eye_distance = adjust_distance(eye_distance_to_nose_tip, current_pitch, calib_pitch)
 
     # Calculate the difference between the eye and pupil from calibration (this will be considered straight)
     calib_diff = calibration['pupil_distance_to_nose_tip'] - calibration['eye_distance_to_nose_tip']
-    current_diff = normalized_pupil_distance - normalized_eye_distance
+    current_diff = adjusted_pupil_distance - adjusted_eye_distance
 
     total_diff = round(current_diff - calib_diff, decimal_places_rounding)
 
     # Print current total difference
-    cv2.putText(frame, f"current pitch: {current_pitch}", (150, 150),
+    cv2.putText(frame, f"current pitch: {current_pitch}", (100, 100),
                 cv2.FONT_HERSHEY_SIMPLEX, 1,
                 (0, 0, 0), 2)
 
